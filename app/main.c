@@ -3,26 +3,34 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <dirent.h>
 
 #define BUILTIN_SIZE 10
-
-int is_executable(const char *path) {
-    return access(path, X_OK) == 0;
-}
 
 char *find_in_path(const char *command) {
     char *path_env = getenv("PATH");
     if (path_env == NULL) return NULL;
 
     char *path_copy = strndup(path_env, strlen(path_env));
-    char *dir = strtok(path_copy, ":");
+    char *dir_path = strtok(path_copy, ":");
     static char full_path[1024];
-    while (dir != NULL) {
-        snprintf(full_path, sizeof(full_path), "%s/%s", dir, command);
-        if (is_executable(full_path)) {
-            free(path_copy);
-            return full_path;
+
+    while (dir_path != NULL) {
+        DIR *dir = opendir(dir_path);
+        if (dir == NULL) {
+            dir_path = strtok(NULL, ":");
+            continue;
         }
+        struct dirent *file;
+        while ((file = readdir(dir))) {
+            if (strcmp(file->d_name, command) == 0) {
+                closedir(dir);
+                free(path_copy);
+                snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, command);
+                return full_path;
+            }
+        }
+        dir_path = strtok(NULL, ":");
     }
     free(path_copy);
     return NULL;
