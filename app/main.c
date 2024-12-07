@@ -24,9 +24,9 @@ char *find_in_path(const char *command) {
         struct dirent *file;
         while ((file = readdir(dir))) {
             if (strcmp(file->d_name, command) == 0) {
+                snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, command);
                 closedir(dir);
                 free(path_copy);
-                snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, command);
                 return full_path;
             }
         }
