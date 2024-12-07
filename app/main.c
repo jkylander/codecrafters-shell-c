@@ -2,17 +2,23 @@
 #include <string.h>
 
 int main() {
-  // Uncomment this block to pass the first stage
-  printf("$ ");
-  fflush(stdout);
 
-  // Wait for user input
-  char input[100];
-  fgets(input, 100, stdin);
+    while(1) {
 
-  // Remove newline form input
-  int len = strlen(input);
-  input[len - 1] = '\0';
-  printf("%s: command not found\n", input);
-  return 0;
+        printf("$ ");
+        fflush(stdout);
+        // Wait for user input
+        char input[100];
+
+        if (!fgets(input, 100, stdin)) {
+            printf("exit\n");
+            break;
+        }
+        // Remove newline from input
+        int len = strlen(input);
+        input[len - 1] = '\0';
+        printf("%s: command not found\n", input);
+
+    }
+    return 0;
 }
