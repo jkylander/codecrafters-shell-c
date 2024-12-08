@@ -88,6 +88,17 @@ int launch(char **argv) {
     return 1;
 }
 
+int builtin_cd(char **args) {
+    if (args[1] == NULL) {
+        fprintf(stderr, "Error: expected argument to cd\n");
+    } else {
+        if (chdir(args[1]) != 0) {
+            fprintf(stderr, "cd: %s: No such file or directory\n", args[1]);
+        }
+    }
+    return 1;
+}
+
 int repl() {
     printf("$ ");
     fflush(stdout);
@@ -104,14 +115,14 @@ int repl() {
     char **argv = split_line(input);
 
     if (strcmp(argv[0], "type") == 0) {
-        char *builtins[4] = {
-            "echo", "exit", "type", "pwd",
+        char *builtins[5] = {
+            "echo", "exit", "type", "pwd", "cd",
         };
         if (argv[1] == NULL) {
             fprintf(stderr, "Error: expected argument");
             return 1;
         }
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 5; i++) {
             if (strcmp(builtins[i], argv[1]) == 0) {
                 printf("%s is a shell builtin\n", argv[1]);
                 return 1;
@@ -124,7 +135,6 @@ int repl() {
         }
 
         printf("%s: not found\n", argv[1]);
-        return 1;
     }
 
     else if (strcmp(argv[0], "exit") == 0) {
@@ -156,13 +166,14 @@ int repl() {
             arg++;
         }
         printf("\n");
-        return 1;
     }
     else if (strcmp(argv[0], "pwd") == 0) {
         char cwd[1024];
         getcwd(cwd, sizeof(cwd));
         printf("%s\n", cwd);
-        return 1;
+    }
+    else if (strcmp(argv[0], "cd") == 0) {
+        builtin_cd(argv);
     }
     else launch(argv);
     return 1;
