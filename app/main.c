@@ -92,7 +92,14 @@ int builtin_cd(char **args) {
     if (args[1] == NULL) {
         fprintf(stderr, "Error: expected argument to cd\n");
     } else {
-        if (chdir(args[1]) != 0) {
+        if (strcmp(args[1], "~") == 0) {
+            char *home = getenv("HOME");
+            if (home == NULL) {
+                fprintf(stderr, "Error: $HOME is not set\n");
+            }
+            chdir(home);
+        }
+        else if (chdir(args[1]) != 0) {
             fprintf(stderr, "cd: %s: No such file or directory\n", args[1]);
         }
     }
