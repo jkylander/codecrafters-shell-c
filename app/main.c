@@ -3,9 +3,35 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <dirent.h>
 
-#define BUILTIN_SIZE 10
+char **split_line(char *line) {
+    int bufsize = 60, position = 0;
+    char **tokens = malloc(bufsize * sizeof(char *));
+    char *token;
+    if (!tokens) {
+        fprintf(stderr, "split_line: allocation error");
+        exit(EXIT_FAILURE);
+    }
+    token = strtok(line, " \t\r\n\a");
+    while (token != NULL) {
+        tokens[position] = token;
+        position++;
+        if (position >= bufsize) {
+            bufsize += bufsize / 2;
+            tokens = realloc(tokens, bufsize * sizeof(char *));
+            if (!tokens) {
+                fprintf(stderr, "split_line: allocation error");
+                exit(EXIT_FAILURE);
+            }
+        }
+        token = strtok(NULL, " \t\r\n\a");
+    }
+    tokens[position] = NULL;
+    return tokens;
+}
 
 char *find_in_path(const char *command) {
     char *path_env = getenv("PATH");
@@ -36,6 +62,33 @@ char *find_in_path(const char *command) {
     return NULL;
 }
 
+int launch(char *input) {
+    pid_t pid, wpid;
+    int status;
+    char **argv = split_line(input);
+    if (find_in_path(argv[0]) == NULL) {
+        fprintf(stderr, "%s: command not found\n", argv[0]);
+        return 0;
+    }
+    pid = fork();
+    if (pid == 0) {
+        // Child process
+        if (execvp(argv[0], argv) == -1) {
+            perror("launch");
+        }
+        exit(EXIT_FAILURE);
+    } else if (pid < 0) {
+        // Error forking
+        perror("launch");
+    } else {
+        // Parent process
+        do {
+            wpid = waitpid(pid, &status, WUNTRACED);
+        } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+    }
+    return 1;
+}
+
 int repl() {
     printf("$ ");
     fflush(stdout);
@@ -51,11 +104,11 @@ int repl() {
     input[len - 1] = '\0';
 
     if (strncmp(input, "type", strlen("type")) == 0) {
-        char builtins[][BUILTIN_SIZE] = {
+        char *builtins[] = {
             "echo", "exit", "type",
         };
         char *args = input + 5;
-        for (int i = 0; i < sizeof(builtins) / BUILTIN_SIZE; i++) {
+        for (int i = 0; i < sizeof(builtins) / sizeof(char *); i++) {
             if (strcmp(builtins[i], args) == 0) {
                 printf("%s is a shell builtin\n", args);
                 return 1;
@@ -89,7 +142,7 @@ int repl() {
     else if (strncmp(input, "echo", 4) == 0) {
         printf("%s\n", input + 5);
     }
-    else printf("%s: command not found\n", input);
+    else launch(input);
     return 1;
 
 }
