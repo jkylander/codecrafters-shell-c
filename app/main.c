@@ -62,10 +62,9 @@ char *find_in_path(const char *command) {
     return NULL;
 }
 
-int launch(char *input) {
+int launch(char **argv) {
     pid_t pid, wpid;
     int status;
-    char **argv = split_line(input);
     if (find_in_path(argv[0]) == NULL) {
         fprintf(stderr, "%s: command not found\n", argv[0]);
         return 0;
@@ -102,47 +101,70 @@ int repl() {
     // Remove newline from input
     int len = strlen(input);
     input[len - 1] = '\0';
+    char **argv = split_line(input);
 
-    if (strncmp(input, "type", strlen("type")) == 0) {
-        char *builtins[] = {
-            "echo", "exit", "type",
+    if (strcmp(argv[0], "type") == 0) {
+        char *builtins[4] = {
+            "echo", "exit", "type", "pwd",
         };
-        char *args = input + 5;
-        for (int i = 0; i < sizeof(builtins) / sizeof(char *); i++) {
-            if (strcmp(builtins[i], args) == 0) {
-                printf("%s is a shell builtin\n", args);
-                return 1;
-            }
-            char *path;
-            if ((path = find_in_path(args))) {
-                printf("%s is %s\n", args, path);
+        if (argv[1] == NULL) {
+            fprintf(stderr, "Error: expected argument");
+            return 1;
+        }
+        for (int i = 0; i < 4; i++) {
+            if (strcmp(builtins[i], argv[1]) == 0) {
+                printf("%s is a shell builtin\n", argv[1]);
                 return 1;
             }
         }
-        printf("%s: not found\n", args);
+        char *path;
+        if ((path = find_in_path(argv[1]))) {
+            printf("%s is %s\n", argv[1], path);
+            return 1;
+        }
+
+        printf("%s: not found\n", argv[1]);
         return 1;
     }
 
-    else if (strncmp(input, "exit", 4) == 0) {
+    else if (strcmp(argv[0], "exit") == 0) {
+        if (argv[1] == NULL) {
+            fprintf(stderr, "No exit code found\n");
+            return 1;
+        }
         errno = 0;
-        char *args = input + 4;
         char *endptr;
-        int exit_status = strtol(args, &endptr, 10);
+        int exit_status = strtol(argv[1], &endptr, 10);
         if (errno != 0) {
             perror("strtol");
             exit(EXIT_FAILURE);
         }
-        if (endptr == args) {
+        if (endptr == argv[1]) {
             fprintf(stderr, "No exit status found\n");
             return 1;
         }
         exit(exit_status);
     }
 
-    else if (strncmp(input, "echo", 4) == 0) {
-        printf("%s\n", input + 5);
+    else if (strcmp(argv[0], "echo") == 0) {
+        char **arg = argv + 1;
+        while (*arg != NULL) {
+            printf("%s", *arg);
+            if (*(arg + 1) != NULL) {
+                printf(" ");
+            }
+            arg++;
+        }
+        printf("\n");
+        return 1;
     }
-    else launch(input);
+    else if (strcmp(argv[0], "pwd") == 0) {
+        char cwd[1024];
+        getcwd(cwd, sizeof(cwd));
+        printf("%s\n", cwd);
+        return 1;
+    }
+    else launch(argv);
     return 1;
 
 }
