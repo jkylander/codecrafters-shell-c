@@ -31,6 +31,9 @@ char *read_token(char **input) {
     char *current = *input;
     int in_quotes = 0;
     char quote_char = '\0';
+    char *token = malloc(strlen(start) + 1); // Max possible length
+    int token_len = 0;
+
     while(*current != '\0') {
         if (!in_quotes && (*current == ' ')) {
             break;
@@ -39,28 +42,44 @@ char *read_token(char **input) {
             if (!in_quotes) {
                 in_quotes = 1;
                 quote_char = *current;
+                current++;
+                continue;
             } else if (*current == quote_char) {
                 in_quotes = 0;
                 quote_char = '\0';
+                current++;
+                continue;
             }
+        }
+        // Special handing for backslash escaping w/ double quotes
+        // See: https://www.gnu.org/software/bash/manual/bash.html#Double-Quotes
+        if (quote_char == '"' && *current == '\\') {
+            current++;
+            if (*current == '\\' || *current == '$' || *current == '"' || *current == '\n') {
+                token[token_len++] = *current;
+            } else {
+                // preserve backslash if not a special case
+                token[token_len++] = '\\';
+                token[token_len++] = *current;
+            }
+        } else {
+            token[token_len++] = *current;
         }
         current++;
     }
-    int len = current - start;
-    char *token = NULL;
-    if (len > 0) {
-        int j = 0;
-        token = malloc(len + 1);
-        for (int i = 0; i < len; i++) {
-            if (start[i] != '\'' && start[i] != '"') {
-                token[j++] = start[i];
-            }
-        }
-        token[j] = '\0';
-    }
+    token[token_len] = '\0';
+
+    // Shrink token to exact length
+    token = realloc(token, token_len + 1);
 
     while (*current == ' ') current++;
     *input = current;
+
+    // If token is empty, return NULL
+    if (token_len == 0) {
+        free(token);
+        return NULL;
+    }
     return token;
 }
 
