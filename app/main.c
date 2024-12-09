@@ -11,6 +11,14 @@
 #include <stdbool.h>
 
 char **argv;
+
+
+int builtin_echo();
+int builtin_exit();
+int builtin_type();
+int builtin_pwd();
+int builtin_cd();
+
 char *builtins[] = {
     "echo", "exit", "type", "pwd", "cd",
 };
@@ -19,6 +27,13 @@ int num_builtins() {
     return sizeof(builtins) / sizeof(char *);
 }
 
+int (*builtin_func[]) () = {
+    &builtin_echo,
+    &builtin_exit,
+    &builtin_type,
+    &builtin_pwd,
+    &builtin_cd,
+};
 
 void skip_whitespace(char **input) {
     while (**input == ' ' || **input == '\r' || **input == '\t') (*input)++;
@@ -87,7 +102,7 @@ char *read_token(char **input) {
     return token;
 }
 
-char **split_line(char *line) {
+char **parse_argv(char *line) {
     int bufsize = 60, position = 0;
     char **tokens = malloc(bufsize * sizeof(char *));
     char *token;
@@ -208,6 +223,44 @@ int builtin_type() {
     }
     return 1;
 }
+int builtin_exit() {
+    if (argv[1] == NULL) {
+        fprintf(stderr, "No exit code found\n");
+        return 1;
+    }
+    errno = 0;
+    char *endptr;
+    int exit_status = strtol(argv[1], &endptr, 10);
+    if (errno != 0) {
+        perror("strtol");
+        exit(EXIT_FAILURE);
+    }
+    if (endptr == argv[1]) {
+        fprintf(stderr, "No exit status found\n");
+        return 1;
+    }
+    exit(exit_status);
+}
+
+int builtin_echo() {
+    char **arg = argv + 1;
+    while (*arg != NULL) {
+        printf("%s", *arg);
+        if (*(arg + 1) != NULL) {
+            printf(" ");
+        }
+        arg++;
+    }
+    printf("\n");
+    return 1;
+}
+
+int builtin_pwd() {
+    char cwd[1024];
+    getcwd(cwd, sizeof(cwd));
+    printf("%s\n", cwd);
+    return 1;
+}
 
 void free_tokens() {
     if (argv == NULL) return;
@@ -230,53 +283,14 @@ int repl() {
     // Remove newline from input
     int len = strlen(input);
     input[len - 1] = '\0';
-    argv = split_line(input);
+    argv = parse_argv(input);
 
-    if (strcmp(argv[0], "type") == 0) {
-        return builtin_type();
-    }
-
-    else if (strcmp(argv[0], "exit") == 0) {
-        if (argv[1] == NULL) {
-            fprintf(stderr, "No exit code found\n");
-            return 1;
+    for (int i = 0, n = num_builtins(); i < n; i++) {
+        if (strcmp(argv[0], builtins[i]) == 0) {
+            return (*builtin_func[i])();
         }
-        errno = 0;
-        char *endptr;
-        int exit_status = strtol(argv[1], &endptr, 10);
-        if (errno != 0) {
-            perror("strtol");
-            exit(EXIT_FAILURE);
-        }
-        if (endptr == argv[1]) {
-            fprintf(stderr, "No exit status found\n");
-            return 1;
-        }
-        exit(exit_status);
     }
-
-    else if (strcmp(argv[0], "echo") == 0) {
-        char **arg = argv + 1;
-        while (*arg != NULL) {
-            printf("%s", *arg);
-            if (*(arg + 1) != NULL) {
-                printf(" ");
-            }
-            arg++;
-        }
-        printf("\n");
-    }
-    else if (strcmp(argv[0], "pwd") == 0) {
-        char cwd[1024];
-        getcwd(cwd, sizeof(cwd));
-        printf("%s\n", cwd);
-    }
-    else if (strcmp(argv[0], "cd") == 0) {
-        return builtin_cd();
-    }
-    else launch();
-    return 1;
-
+    return launch();
 }
 
 int main() {
