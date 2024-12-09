@@ -8,6 +8,7 @@
 #include <sys/wait.h>
 #include <dirent.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 char **argv;
 char *builtins[] = {
@@ -37,6 +38,9 @@ char *read_token(char **input) {
     while(*current != '\0') {
         if (!in_quotes && (*current == ' ')) {
             break;
+        }
+        if (!in_quotes && *current == '\\') {
+            current++;
         }
         if (*current == '\'' || *current == '"') {
             if (!in_quotes) {
