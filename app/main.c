@@ -1,3 +1,4 @@
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,19 +7,77 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <dirent.h>
+#include <stdint.h>
+
+char **argv;
+char *builtins[] = {
+    "echo", "exit", "type", "pwd", "cd",
+};
+
+int num_builtins() {
+    return sizeof(builtins) / sizeof(char *);
+}
+
+
+void skip_whitespace(char **input) {
+    while (**input == ' ' || **input == '\r' || **input == '\t') (*input)++;
+}
+
+char *read_token(char **input) {
+    skip_whitespace(input);
+    if (**input == '\0') return NULL;
+
+    char *start = *input;
+    char *current = *input;
+    int in_quotes = 0;
+    char quote_char = '\0';
+    while(*current != '\0') {
+        if (!in_quotes && (*current == ' ')) {
+            break;
+        }
+        if (*current == '\'' || *current == '"') {
+            if (!in_quotes) {
+                in_quotes = 1;
+                quote_char = *current;
+            } else if (*current == quote_char) {
+                in_quotes = 0;
+                quote_char = '\0';
+            }
+        }
+        current++;
+    }
+    int len = current - start;
+    char *token = NULL;
+    if (len > 0) {
+        int j = 0;
+        token = malloc(len + 1);
+        for (int i = 0; i < len; i++) {
+            if (start[i] != '\'' && start[i] != '"') {
+                token[j++] = start[i];
+            }
+        }
+        token[j] = '\0';
+    }
+
+    while (*current == ' ') current++;
+    *input = current;
+    return token;
+}
 
 char **split_line(char *line) {
     int bufsize = 60, position = 0;
     char **tokens = malloc(bufsize * sizeof(char *));
     char *token;
+
     if (!tokens) {
         fprintf(stderr, "split_line: allocation error");
         exit(EXIT_FAILURE);
     }
-    token = strtok(line, " \t\r\n\a");
-    while (token != NULL) {
+    char *current = line;
+    while ((token = read_token(&current)) != NULL) {
         tokens[position] = token;
         position++;
+
         if (position >= bufsize) {
             bufsize += bufsize / 2;
             tokens = realloc(tokens, bufsize * sizeof(char *));
@@ -27,7 +86,6 @@ char **split_line(char *line) {
                 exit(EXIT_FAILURE);
             }
         }
-        token = strtok(NULL, " \t\r\n\a");
     }
     tokens[position] = NULL;
     return tokens;
@@ -62,7 +120,7 @@ char *find_in_path(const char *command) {
     return NULL;
 }
 
-int launch(char **argv) {
+int launch() {
     pid_t pid, wpid;
     int status;
     if (find_in_path(argv[0]) == NULL) {
@@ -88,22 +146,52 @@ int launch(char **argv) {
     return 1;
 }
 
-int builtin_cd(char **args) {
-    if (args[1] == NULL) {
+int builtin_cd() {
+    if (argv[1] == NULL) {
         fprintf(stderr, "Error: expected argument to cd\n");
     } else {
-        if (strcmp(args[1], "~") == 0) {
+        if (strcmp(argv[1], "~") == 0) {
             char *home = getenv("HOME");
             if (home == NULL) {
                 fprintf(stderr, "Error: $HOME is not set\n");
+                return 1;
             }
             chdir(home);
         }
-        else if (chdir(args[1]) != 0) {
-            fprintf(stderr, "cd: %s: No such file or directory\n", args[1]);
+        else if (chdir(argv[1]) != 0) {
+            fprintf(stderr, "cd: %s: No such file or directory\n", argv[1]);
         }
     }
     return 1;
+}
+
+int builtin_type() {
+    if (argv[1] == NULL) {
+        fprintf(stderr, "Error: expected argument");
+        return 1;
+    }
+    for (int i = 0, n = num_builtins(); i < n; i++) {
+        if (strcmp(builtins[i], argv[1]) == 0) {
+            printf("%s is a shell builtin\n", argv[1]);
+            return 1;
+        }
+    }
+
+    char *path;
+    if ((path = find_in_path(argv[1]))) {
+        printf("%s is %s\n", argv[1], path);
+    } else {
+        printf("%s: not found\n", argv[1]);
+    }
+    return 1;
+}
+
+void free_tokens() {
+    if (argv == NULL) return;
+    for (int i = 0; argv[i] != NULL; i++) {
+        free(argv[i]);
+    }
+    free(argv);
 }
 
 int repl() {
@@ -119,29 +207,10 @@ int repl() {
     // Remove newline from input
     int len = strlen(input);
     input[len - 1] = '\0';
-    char **argv = split_line(input);
+    argv = split_line(input);
 
     if (strcmp(argv[0], "type") == 0) {
-        char *builtins[5] = {
-            "echo", "exit", "type", "pwd", "cd",
-        };
-        if (argv[1] == NULL) {
-            fprintf(stderr, "Error: expected argument");
-            return 1;
-        }
-        for (int i = 0; i < 5; i++) {
-            if (strcmp(builtins[i], argv[1]) == 0) {
-                printf("%s is a shell builtin\n", argv[1]);
-                return 1;
-            }
-        }
-        char *path;
-        if ((path = find_in_path(argv[1]))) {
-            printf("%s is %s\n", argv[1], path);
-            return 1;
-        }
-
-        printf("%s: not found\n", argv[1]);
+        return builtin_type();
     }
 
     else if (strcmp(argv[0], "exit") == 0) {
@@ -180,15 +249,17 @@ int repl() {
         printf("%s\n", cwd);
     }
     else if (strcmp(argv[0], "cd") == 0) {
-        builtin_cd(argv);
+        return builtin_cd();
     }
-    else launch(argv);
+    else launch();
     return 1;
 
 }
 
 int main() {
-    while(repl());
+    while(repl()) {
+        free_tokens();
+    };
 
     return 0;
 }
