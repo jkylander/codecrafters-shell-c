@@ -49,49 +49,83 @@ char *read_token(char **input) {
     char quote_char = '\0';
     char *token = malloc(strlen(start) + 1); // Max possible length
     int token_len = 0;
+    bool in_single_quotes = false;
+    bool in_double_quotes = false;
+    bool escape_next = false;
 
     while(*current != '\0') {
-        if (!in_quotes && (*current == ' ')) {
+        // Handle escape sequences and quoted sections
+        if (escape_next) {
+            token[token_len++] = *current;
+            escape_next = false;
+            current++;
+            continue;
+        }
+
+        // Handle backslash escaping
+        if (*current == '\\' && !in_single_quotes) {
+            if (in_double_quotes) {
+                if (strchr("$`\"\\", *(current +1))) {
+                    escape_next = true;
+                    current++;
+                    continue;
+                }
+            } else {
+                // outside quotes, escape next
+                escape_next = true;
+                current++;
+                continue;
+            }
+        }
+
+        // Handle quote transitions
+        if (*current == '\'' && !in_double_quotes) {
+            if (!in_single_quotes) {
+                in_single_quotes = true;
+                current++;
+                continue;
+            } else {
+                in_single_quotes = false;
+                current++;
+                continue;
+            }
+        }
+
+        if (*current == '"' && !in_single_quotes) {
+            if (!in_double_quotes) {
+                in_double_quotes = true;
+                current++;
+                continue;
+            } else {
+                in_double_quotes = false;
+                current++;
+                continue;
+            }
+        }
+
+        // Check for token termination
+        if (!in_single_quotes && !in_double_quotes &&
+            (*current == ' ' || *current == '\t' || *current == '\r')) {
             break;
         }
-        if (!in_quotes && *current == '\\') {
-            current++;
-        }
-        if (*current == '\'' || *current == '"') {
-            if (!in_quotes) {
-                in_quotes = 1;
-                quote_char = *current;
-                current++;
-                continue;
-            } else if (*current == quote_char) {
-                in_quotes = 0;
-                quote_char = '\0';
-                current++;
-                continue;
-            }
-        }
-        // Special handing for backslash escaping w/ double quotes
-        // See: https://www.gnu.org/software/bash/manual/bash.html#Double-Quotes
-        if (quote_char == '"' && *current == '\\') {
-            current++;
-            if (*current == '\\' || *current == '$' || *current == '"' || *current == '\n') {
-                token[token_len++] = *current;
-            } else {
-                // preserve backslash if not a special case
-                token[token_len++] = '\\';
-                token[token_len++] = *current;
-            }
-        } else {
-            token[token_len++] = *current;
-        }
+
+        // Add char to token
+        token[token_len++] = *current;
         current++;
     }
+
+    if (in_single_quotes || in_double_quotes) {
+        fprintf(stderr, "Error: unclosed quote\n");
+        free(token);
+        return NULL;
+    }
+
     token[token_len] = '\0';
 
     // Shrink token to exact length
     token = realloc(token, token_len + 1);
 
-    while (*current == ' ') current++;
+    while (*current == ' ' || *current == '\t' || *current == '\r') current++;
     *input = current;
 
     // If token is empty, return NULL
@@ -163,7 +197,7 @@ int launch() {
     int status;
     if (find_in_path(argv[0]) == NULL) {
         fprintf(stderr, "%s: command not found\n", argv[0]);
-        return 0;
+        return 1;
     }
     pid = fork();
     if (pid == 0) {
