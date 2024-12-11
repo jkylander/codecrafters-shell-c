@@ -12,21 +12,17 @@
 
 char **argv;
 
-
 int builtin_echo();
 int builtin_exit();
 int builtin_type();
 int builtin_pwd();
 int builtin_cd();
 
-char *builtins[] = {
+char *builtins_str[] = {
     "echo", "exit", "type", "pwd", "cd",
 };
 
-int num_builtins() {
-    return sizeof(builtins) / sizeof(char *);
-}
-
+// NOTE: needs to be in same order as builtins_str[]
 int (*builtin_func[]) () = {
     &builtin_echo,
     &builtin_exit,
@@ -35,11 +31,15 @@ int (*builtin_func[]) () = {
     &builtin_cd,
 };
 
+int num_builtins() {
+    return sizeof(builtins_str) / sizeof(char *);
+}
+
 void skip_whitespace(char **input) {
     while (**input == ' ' || **input == '\r' || **input == '\t') (*input)++;
 }
 
-char *read_token(char **input) {
+char *tokenize(char **input) {
     skip_whitespace(input);
     if (**input == '\0') return NULL;
 
@@ -54,6 +54,7 @@ char *read_token(char **input) {
     bool escape_next = false;
 
     while(*current != '\0') {
+        // https://www.gnu.org/software/bash/manual/bash.html#Quoting
         // Handle escape sequences and quoted sections
         if (escape_next) {
             token[token_len++] = *current;
@@ -136,6 +137,7 @@ char *read_token(char **input) {
     return token;
 }
 
+// Read input, return argument vector
 char **parse_argv(char *line) {
     int bufsize = 60, position = 0;
     char **tokens = malloc(bufsize * sizeof(char *));
@@ -146,7 +148,7 @@ char **parse_argv(char *line) {
         exit(EXIT_FAILURE);
     }
     char *current = line;
-    while ((token = read_token(&current)) != NULL) {
+    while ((token = tokenize(&current)) != NULL) {
         tokens[position] = token;
         position++;
 
@@ -163,6 +165,7 @@ char **parse_argv(char *line) {
     return tokens;
 }
 
+// Search $PATH for executable, return executable path or NULL
 char *find_in_path(const char *command) {
     char *path_env = getenv("PATH");
     if (path_env == NULL) return NULL;
@@ -192,6 +195,7 @@ char *find_in_path(const char *command) {
     return NULL;
 }
 
+// fork and run executable
 int launch() {
     pid_t pid, wpid;
     int status;
@@ -243,7 +247,7 @@ int builtin_type() {
         return 1;
     }
     for (int i = 0, n = num_builtins(); i < n; i++) {
-        if (strcmp(builtins[i], argv[1]) == 0) {
+        if (strcmp(builtins_str[i], argv[1]) == 0) {
             printf("%s is a shell builtin\n", argv[1]);
             return 1;
         }
@@ -320,7 +324,7 @@ int repl() {
     argv = parse_argv(input);
 
     for (int i = 0, n = num_builtins(); i < n; i++) {
-        if (strcmp(argv[0], builtins[i]) == 0) {
+        if (strcmp(argv[0], builtins_str[i]) == 0) {
             return (*builtin_func[i])();
         }
     }
