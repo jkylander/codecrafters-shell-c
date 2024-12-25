@@ -10,6 +10,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include <readline/readline.h>
+#include <readline/history.h>
+
 char **argv;
 
 int builtin_echo();
@@ -308,20 +311,29 @@ void free_tokens() {
     free(argv);
 }
 
-int repl() {
-    printf("$ ");
-    fflush(stdout);
-    // Wait for user input
-    char input[100];
+static char *line_read = (char *) NULL;
 
-    if (!fgets(input, 100, stdin)) {
-        printf("exit\n");
+char *rl_gets() {
+    if (line_read) {
+        free(line_read);
+        line_read = (char *) NULL;
+    }
+    line_read = readline("$ ");
+    if (line_read && *line_read)
+        add_history(line_read);
+    return line_read;
+}
+
+int repl() {
+    char input_buffer[BUFSIZ] = {0};
+
+    rl_gets();
+    if (line_read == NULL) {
+        printf("exit.\n");
         return 0;
     }
-    // Remove newline from input
-    int len = strlen(input);
-    input[len - 1] = '\0';
-    argv = parse_argv(input);
+
+    argv = parse_argv(line_read);
 
     for (int i = 0, n = num_builtins(); i < n; i++) {
         if (strcmp(argv[0], builtins_str[i]) == 0) {
