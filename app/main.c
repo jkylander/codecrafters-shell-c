@@ -10,8 +10,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include <readline/readline.h>
-#include <readline/history.h>
+#include "readline/readline.h"
+#include "readline/history.h"
 
 char **argv;
 
