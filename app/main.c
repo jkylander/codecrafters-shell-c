@@ -13,14 +13,22 @@
 
 char **argv;
 
-struct redirection {
+struct Redirection {
     int out_fd;
     int err_fd;
 };
 
-char **handle_redirection(char **args, struct redirection *red);
-void restore_redirections(struct redirection *red, int saved_stdout, int saved_stderr);
+struct Command {
+    char **args;
+    struct Redirection red;
+};
+
+char **handle_redirection(char **args, struct Redirection *red);
+void restore_redirections(struct Redirection *red, int saved_stdout, int saved_stderr);
 bool has_redirection(char **args);
+
+struct Command *split_commands(char **args, int *cmd_count);
+int execute_pipeline(struct Command *commands, int cmd_count);
 
 int builtin_echo();
 int builtin_exit();
@@ -324,7 +332,15 @@ bool has_redirection(char **args) {
     return false;
 }
 
-void restore_redirections(struct redirection *red, int saved_stdout, int saved_stderr) {
+bool has_pipe(char **args) {
+    for (int i = 0; args[i] != NULL; i++) {
+        if (strcmp(args[i], "|") == 0) return true;
+    }
+    return false;
+}
+
+
+void restore_redirections(struct Redirection *red, int saved_stdout, int saved_stderr) {
     if (red->out_fd != -1) {
         dup2(saved_stdout, STDOUT_FILENO);
         close(red->out_fd);
@@ -338,7 +354,7 @@ void restore_redirections(struct redirection *red, int saved_stdout, int saved_s
     }
 }
 
-char **handle_redirection(char **args, struct redirection *red) {
+char **handle_redirection(char **args, struct Redirection *red) {
     char **new_args = malloc(sizeof(char *) * BUFSIZ);
     if (args[0] == NULL) {
         return NULL;
@@ -386,6 +402,117 @@ char **handle_redirection(char **args, struct redirection *red) {
     return new_args;
 }
 
+struct Command *split_commands(char **args, int *cmd_count) {
+    int capacity = 10;
+    struct Command *commands = malloc(sizeof(struct Command) * capacity);
+    int current_cmd = 0;
+    int arg_pos = 0;
+    char **current_args = malloc(sizeof(char *) * BUFSIZ);
+
+    for (int i = 0; args[i] != NULL; i++) {
+        if (strcmp(args[i], "|") == 0) {
+            current_args[arg_pos] = NULL;
+            commands[current_cmd].args = current_args;
+            commands[current_cmd].red = (struct Redirection){-1, -1};
+            current_cmd++;
+
+            if (current_cmd >= capacity){
+                capacity *= 2;
+                commands = realloc(commands, sizeof(struct Command) * capacity);
+            }
+
+            arg_pos = 0;
+            current_args = malloc(sizeof(char *) * BUFSIZ);
+            continue;
+        }
+        current_args[arg_pos++] = strdup(args[i]);
+    }
+    // Handle last command
+    current_args[arg_pos] = NULL;
+    commands[current_cmd].args = current_args;
+    commands[current_cmd].red = (struct Redirection){-1, -1};
+    current_cmd++;
+
+    *cmd_count = current_cmd;
+    return commands;
+}
+
+int execute_pipeline(struct Command *commands, int cmd_count) {
+    int status = 1;
+    int pipes[cmd_count - 1][2];
+
+    // Create all pipes
+    for (int i = 0; i < cmd_count; i++) {
+        if (pipe(pipes[i]) == -1) {
+            perror("pipe");
+            return 1;
+        }
+    }
+
+    // Launch all processes
+    for (int i = 0; i < cmd_count; i++) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            // Child process
+            // Set up input pipe for all except first process
+            if (i > 0) {
+                dup2(pipes[i - 1][0], STDIN_FILENO);
+            }
+            if (i < cmd_count - 1) {
+                dup2(pipes[i][1], STDOUT_FILENO);
+            }
+
+            for (int j = 0; j < cmd_count - 1; j++) {
+                close(pipes[j][0]);
+                close(pipes[j][1]);
+            }
+
+            if (has_redirection(commands[i].args)) {
+                char **new_args = handle_redirection(commands[i].args, &commands[i].red);
+                if (new_args == NULL) exit(EXIT_FAILURE);
+
+                if (commands[i].red.out_fd != -1) {
+                    dup2(commands[i].red.out_fd, STDOUT_FILENO);
+                }
+
+                if (commands[i].red.err_fd!= -1) {
+                    dup2(commands[i].red.err_fd, STDERR_FILENO);
+                }
+
+                argv = new_args;
+            } else {
+                argv = commands[i].args;
+            }
+
+            for (int j = 0; j < num_builtins(); j++) {
+                if (strcmp(argv[0], builtins[j]) == 0) {
+                    exit((*builtin_func[j])());
+                }
+            }
+
+            // Execute external command
+            execvp(argv[0], argv);
+            perror("execvp");
+            exit(EXIT_FAILURE);
+        } else if (pid < 0) {
+            perror("fork");
+            return 1;
+        }
+    }
+
+    // Parent close all pipe fd's
+    for (int i = 0; i < cmd_count; i++) {
+        close(pipes[i][0]);
+        close(pipes[i][1]);
+    }
+    // Wait for all children
+    for (int i = 0; i < cmd_count; i++) {
+        wait(NULL);
+    }
+
+    return status;
+}
+
 int repl() {
     printf("$ ");
     fflush(stdout);
@@ -402,7 +529,23 @@ int repl() {
     argv = parse_argv(input);
     if (argv[0] == NULL) return 1;
 
-    struct redirection red = {-1, -1};
+    if (has_pipe(argv)) {
+        int cmd_count = 0;
+        struct Command *commands = split_commands(argv, &cmd_count);
+        int status = execute_pipeline(commands, cmd_count);
+
+        // Cleanup
+        for (int i = 0; i < cmd_count; i++) {
+            for (int j = 0; commands[i].args[j] != NULL; j++) {
+                free(commands[i].args[j]);
+            }
+            free(commands[i].args);
+        }
+        free(commands);
+        return status;
+    }
+
+    struct Redirection red = {-1, -1};
     char **cmd_args = argv;
 
     // Save file descriptors
