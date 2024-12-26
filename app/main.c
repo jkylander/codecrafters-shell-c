@@ -332,7 +332,7 @@ void restore_redirections(struct redirection *red, int saved_stdout, int saved_s
     }
 
     if (red->err_fd!= -1) {
-        dup2(saved_stderr, STDOUT_FILENO);
+        dup2(saved_stderr, STDERR_FILENO);
         close(red->err_fd);
         close(saved_stderr);
     }
