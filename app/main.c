@@ -9,15 +9,25 @@
 #include <dirent.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <fcntl.h>
 
 char **argv;
 
+struct redirection {
+    int out_fd;
+    int err_fd;
+};
+
+char **handle_redirection(char **args, struct redirection *red);
+void restore_redirections(struct redirection *red, int saved_stdout, int saved_stderr);
+bool has_redirection(char **args);
 
 int builtin_echo();
 int builtin_exit();
 int builtin_type();
 int builtin_pwd();
 int builtin_cd();
+
 
 char *builtins[] = {
     "echo", "exit", "type", "pwd", "cd",
@@ -195,6 +205,9 @@ char *find_in_path(const char *command) {
 int launch() {
     pid_t pid, wpid;
     int status;
+
+    if (argv[0] == NULL) return 1;
+
     if (find_in_path(argv[0]) == NULL) {
         fprintf(stderr, "%s: command not found\n", argv[0]);
         return 1;
@@ -304,13 +317,82 @@ void free_tokens() {
     free(argv);
 }
 
+bool has_redirection(char **args) {
+    for (int i = 0; args[i] != NULL; i++) {
+        if (strstr(args[i], ">") != NULL) return true;
+    }
+    return false;
+}
+
+void restore_redirections(struct redirection *red, int saved_stdout, int saved_stderr) {
+    if (red->out_fd != -1) {
+        dup2(saved_stdout, STDOUT_FILENO);
+        close(red->out_fd);
+        close(saved_stdout);
+    }
+
+    if (red->err_fd!= -1) {
+        dup2(saved_stderr, STDOUT_FILENO);
+        close(red->err_fd);
+        close(saved_stderr);
+    }
+}
+
+char **handle_redirection(char **args, struct redirection *red) {
+    char **new_args = malloc(sizeof(char *) * BUFSIZ);
+    if (args[0] == NULL) {
+        return NULL;
+    }
+    int i = 0, j = 0;
+    while (args[i] != NULL) {
+        if (strcmp(args[i], ">") == 0 || strcmp(args[i], "1>") == 0 ||
+            strcmp(args[i], ">>") == 0 || strcmp(args[i], "1>>") == 0) {
+
+            if (args[i + 1] == NULL) {
+                fprintf(stderr, "Error: expected filename/stream after >\n");
+                return NULL;
+            }
+            int flags = O_WRONLY | O_CREAT;
+            flags |= (strcmp(args[i], ">>") == 0 || strcmp(args[i], "1>>") == 0) ? O_APPEND : O_TRUNC;
+            red->out_fd = open(args[i + 1], flags, 0644);
+            if (red->out_fd == -1) {
+                perror("open");
+                return NULL;
+            }
+            i += 2; // advance past the redirection
+            continue;
+        }
+
+        if (strcmp(args[i], "2>") == 0 || strcmp(args[i], "2>>") == 0) {
+
+            if (args[i + 1] == NULL) {
+                fprintf(stderr, "Error: expected filename/stream after >\n");
+                return NULL;
+            }
+            int flags = O_WRONLY | O_CREAT;
+            flags |= (strcmp(args[i], "2>>") == 0) ? O_APPEND : O_TRUNC;
+            red->err_fd= open(args[i + 1], flags, 0644);
+            if (red->err_fd == -1) {
+                perror("open");
+                return NULL;
+            }
+            i += 2; // advance past the redirection
+            continue;
+        }
+
+        new_args[j++] = strdup(args[i++]);
+    }
+    new_args[j] = NULL;
+    return new_args;
+}
+
 int repl() {
     printf("$ ");
     fflush(stdout);
     // Wait for user input
-    char input[100];
+    char input[BUFSIZ];
 
-    if (!fgets(input, 100, stdin)) {
+    if (!fgets(input, BUFSIZ, stdin)) {
         printf("exit\n");
         return 0;
     }
@@ -318,13 +400,52 @@ int repl() {
     int len = strlen(input);
     input[len - 1] = '\0';
     argv = parse_argv(input);
+    if (argv[0] == NULL) return 1;
 
-    for (int i = 0, n = num_builtins(); i < n; i++) {
-        if (strcmp(argv[0], builtins[i]) == 0) {
-            return (*builtin_func[i])();
+    struct redirection red = {-1, -1};
+    char **cmd_args = argv;
+
+    // Save file descriptors
+    int saved_stdout = -1;
+    int saved_stderr = -1;
+    if (has_redirection(argv)) {
+        cmd_args = handle_redirection(argv, &red);
+        if (cmd_args == NULL) return 1;
+
+        if (red.out_fd != -1) {
+            saved_stdout = dup(STDOUT_FILENO);
+            dup2(red.out_fd, STDOUT_FILENO);
+        }
+        if (red.err_fd != -1) {
+            saved_stderr = dup(STDERR_FILENO);
+            dup2(red.err_fd, STDERR_FILENO);
         }
     }
-    return launch();
+    int status = 1;
+
+    // Check for builtins
+    for (int i = 0, n = num_builtins(); i < n; i++) {
+        if (strcmp(cmd_args[0], builtins[i]) == 0) {
+            argv = cmd_args;
+            status = (*builtin_func[i])();
+            restore_redirections(&red, saved_stdout, saved_stderr);
+            return status;
+        }
+    }
+
+    // If not builtin, must be external program
+    argv = cmd_args;
+    status = launch();
+    restore_redirections(&red, saved_stdout, saved_stderr);
+
+    // Cleanup
+    if (cmd_args != argv) {
+        for (int i = 0; cmd_args[i] != NULL; i++) {
+            free(cmd_args[i]);
+        }
+        free(cmd_args);
+    }
+    return status;
 }
 
 int main() {
