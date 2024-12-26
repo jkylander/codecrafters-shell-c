@@ -11,40 +11,67 @@
 #include <stdbool.h>
 #include <fcntl.h>
 
-char **argv;
+// Prompt string
+#define PS "$ "
+#define INITIAL_BUFFER_SIZE 64
+#define PATH_MAX 4096
+#define MAX_COMMANDS 256
 
-struct Redirection {
+
+typedef struct {
     int out_fd;
     int err_fd;
-};
+} Redirection;
 
-struct Command {
+typedef struct {
     char **args;
-    struct Redirection red;
+    Redirection red;
+} Command;
+
+typedef struct {
+    char **paths;
+    size_t count;
+} PathCache;
+
+// Global state
+char **g_argv;
+static PathCache g_path_cache = {NULL, 0};
+
+static void init_path_cache(void);
+static void free_path_cache(void);
+static char *find_in_path_cached(const char *command);
+
+static char **handle_redirection(char **args, Redirection *red);
+static void restore_redirections(Redirection *red, int saved_stdout, int saved_stderr);
+static bool has_redirection(char **args);
+
+static Command *split_commands(char **args, int *cmd_count);
+
+static int builtin_echo();
+static int builtin_exit();
+static int builtin_type();
+static int builtin_pwd();
+static int builtin_cd();
+
+// TODO: replace old builtin implementation
+static const struct {
+    const char *name;
+    int (*func)();
+} BUILTINS[] = {
+    {"echo", builtin_echo},
+    {"exit", builtin_exit},
+    {"type", builtin_type},
+    {"pwd", builtin_pwd},
+    {"cd", builtin_cd},
 };
+#define NUM_BUILTINS (sizeof(BUILTINS) / sizeof(BUILTINS[0]))
 
-char **handle_redirection(char **args, struct Redirection *red);
-void restore_redirections(struct Redirection *red, int saved_stdout, int saved_stderr);
-bool has_redirection(char **args);
-
-struct Command *split_commands(char **args, int *cmd_count);
-int execute_pipeline(struct Command *commands, int cmd_count);
-
-int builtin_echo();
-int builtin_exit();
-int builtin_type();
-int builtin_pwd();
-int builtin_cd();
-
-
+#if 0
 char *builtins[] = {
     "echo", "exit", "type", "pwd", "cd",
 };
 
-int num_builtins() {
-    return sizeof(builtins) / sizeof(char *);
-}
-
+// NOTE: Must be in same order as builtins[]
 int (*builtin_func[]) () = {
     &builtin_echo,
     &builtin_exit,
@@ -53,18 +80,73 @@ int (*builtin_func[]) () = {
     &builtin_cd,
 };
 
-void skip_whitespace(char **input) {
-    while (**input == ' ' || **input == '\r' || **input == '\t') (*input)++;
+int num_builtins() {
+    return sizeof(builtins) / sizeof(char *);
+}
+#endif
+
+static void init_path_cache(void) {
+    char *path_env = getenv("PATH");
+    if (!path_env) return;
+    char *path_copy = strdup(path_env);
+    if (!path_copy) return;
+
+    size_t count = 1;
+    for (char *p = path_copy; *p; p++) {
+        if (*p == ':') count++;
+    }
+    g_path_cache.paths = malloc(count * sizeof(char *));
+    if (!g_path_cache.paths) {
+        free(path_copy);
+        return;
+    }
+
+    char *dir = strtok(path_copy, ":");
+    while (dir) {
+        g_path_cache.paths[g_path_cache.count++] = strdup(dir);
+        dir = strtok(NULL, ":");
+    }
+    free(path_copy);
 }
 
-char *read_token(char **input) {
-    skip_whitespace(input);
+static void free_path_cache(void) {
+    if (!g_path_cache.paths) return;
+
+    for (size_t i = 0; i < g_path_cache.count; i++) {
+        free(g_path_cache.paths[i]);
+    }
+    free(g_path_cache.paths);
+    g_path_cache.paths = NULL;
+    g_path_cache.count = 0;
+}
+
+static char *find_in_path_cached(const char *command) {
+    static char full_path[PATH_MAX];
+
+    // First check if command contains path separator
+    if (strchr(command, '/')) {
+        if (access(command, X_OK) == 0) {
+            return strdup(command);
+        }
+        return NULL;
+    }
+
+    // Search in PATH
+    for (size_t i = 0; i < g_path_cache.count; i++) {
+        snprintf(full_path, sizeof(full_path), "%s/%s", g_path_cache.paths[i], command);
+        if (access(full_path, X_OK) == 0) {
+            return strdup(full_path);
+        }
+    }
+    return NULL;
+}
+
+static char *read_token(char **input) {
+    while (**input == ' ' || **input == '\t') (*input)++;
     if (**input == '\0') return NULL;
 
     char *start = *input;
     char *current = *input;
-    int in_quotes = 0;
-    char quote_char = '\0';
     char *token = malloc(strlen(start) + 1); // Max possible length
     int token_len = 0;
     bool in_single_quotes = false;
@@ -181,13 +263,13 @@ char **parse_argv(char *line) {
     return tokens;
 }
 
-char *find_in_path(const char *command) {
+static char *find_in_path(const char *command) {
+    static char full_path[PATH_MAX];
     char *path_env = getenv("PATH");
     if (path_env == NULL) return NULL;
 
     char *path_copy = strndup(path_env, strlen(path_env));
     char *dir_path = strtok(path_copy, ":");
-    static char full_path[1024];
 
     while (dir_path != NULL) {
         DIR *dir = opendir(dir_path);
@@ -210,40 +292,44 @@ char *find_in_path(const char *command) {
     return NULL;
 }
 
-int launch() {
+static int execute_external() {
+    const char *cmd = g_argv[0];
     pid_t pid, wpid;
     int status;
 
-    if (argv[0] == NULL) return 1;
+    if (cmd == NULL) return 1;
 
-    if (find_in_path(argv[0]) == NULL) {
-        fprintf(stderr, "%s: command not found\n", argv[0]);
-        return 1;
+    char *path = find_in_path_cached(cmd);
+
+    if (!path) {
+        fprintf(stderr, "%s: command not found\n", cmd);
+        return 127;
     }
     pid = fork();
+    if (pid == -1) {
+        perror("fork");
+        free(path);
+        return 1;
+    }
     if (pid == 0) {
         // Child process
-        if (execvp(argv[0], argv) == -1) {
-            perror("launch");
-        }
-        exit(EXIT_FAILURE);
-    } else if (pid < 0) {
-        // Error forking
+        execv(path, g_argv);
         perror("launch");
-    } else {
-        // Parent process
-        do {
-            wpid = waitpid(pid, &status, WUNTRACED);
-        } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+        exit(EXIT_FAILURE);
     }
+    // Parent process, wait for children
+    do {
+        wpid = waitpid(pid, &status, WUNTRACED);
+    } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+    free(path);
     return 1;
 }
 
-int builtin_cd() {
-    if (argv[1] == NULL) {
+static int builtin_cd() {
+    if (g_argv[1] == NULL) {
         fprintf(stderr, "Error: expected argument to cd\n");
     } else {
-        if (strcmp(argv[1], "~") == 0) {
+        if (strcmp(g_argv[1], "~") == 0) {
             char *home = getenv("HOME");
             if (home == NULL) {
                 fprintf(stderr, "Error: $HOME is not set\n");
@@ -251,88 +337,78 @@ int builtin_cd() {
             }
             chdir(home);
         }
-        else if (chdir(argv[1]) != 0) {
-            fprintf(stderr, "cd: %s: No such file or directory\n", argv[1]);
+        else if (chdir(g_argv[1]) != 0) {
+            fprintf(stderr, "cd: %s: No such file or directory\n", g_argv[1]);
         }
     }
     return 1;
 }
 
-int builtin_type() {
-    if (argv[1] == NULL) {
+static int builtin_type() {
+    if (g_argv[1] == NULL) {
         fprintf(stderr, "Error: expected argument");
         return 1;
     }
-    for (int i = 0, n = num_builtins(); i < n; i++) {
-        if (strcmp(builtins[i], argv[1]) == 0) {
-            printf("%s is a shell builtin\n", argv[1]);
+    for (size_t i = 0; i < NUM_BUILTINS; i++) {
+        if (strcmp(g_argv[1], BUILTINS[i].name) == 0) {
+            printf("%s is a shell builtin\n", g_argv[1]);
             return 1;
         }
     }
 
     char *path;
-    if ((path = find_in_path(argv[1]))) {
-        printf("%s is %s\n", argv[1], path);
+    if ((path = find_in_path_cached(g_argv[1]))) {
+        printf("%s is %s\n", g_argv[1], path);
     } else {
-        printf("%s: not found\n", argv[1]);
+        printf("%s: not found\n", g_argv[1]);
     }
     return 1;
 }
-int builtin_exit() {
-    if (argv[1] == NULL) {
+static int builtin_exit() {
+    if (g_argv[1] == NULL) {
         fprintf(stderr, "No exit code found\n");
         return 1;
     }
     errno = 0;
     char *endptr;
-    int exit_status = strtol(argv[1], &endptr, 10);
+    int exit_status = strtol(g_argv[1], &endptr, 10);
     if (errno != 0) {
         perror("strtol");
         exit(EXIT_FAILURE);
     }
-    if (endptr == argv[1]) {
+    if (endptr == g_argv[1]) {
         fprintf(stderr, "No exit status found\n");
         return 1;
     }
     exit(exit_status);
 }
 
-int builtin_echo() {
-    char **arg = argv + 1;
-    while (*arg != NULL) {
+static int builtin_echo() {
+
+    for (char **arg = g_argv + 1; *arg; arg++) {
         printf("%s", *arg);
-        if (*(arg + 1) != NULL) {
-            printf(" ");
-        }
-        arg++;
+        bool isLastElement = *(arg + 1) == NULL;
+        if (!isLastElement) printf(" ");
     }
     printf("\n");
     return 1;
 }
 
-int builtin_pwd() {
+static int builtin_pwd() {
     char cwd[1024];
     getcwd(cwd, sizeof(cwd));
     printf("%s\n", cwd);
     return 1;
 }
 
-void free_tokens() {
-    if (argv == NULL) return;
-    for (int i = 0; argv[i] != NULL; i++) {
-        free(argv[i]);
-    }
-    free(argv);
-}
-
-bool has_redirection(char **args) {
+static bool has_redirection(char **args) {
     for (int i = 0; args[i] != NULL; i++) {
         if (strstr(args[i], ">") != NULL) return true;
     }
     return false;
 }
 
-bool has_pipe(char **args) {
+static bool has_pipe(char **args) {
     for (int i = 0; args[i] != NULL; i++) {
         if (strcmp(args[i], "|") == 0) return true;
     }
@@ -340,7 +416,7 @@ bool has_pipe(char **args) {
 }
 
 
-void restore_redirections(struct Redirection *red, int saved_stdout, int saved_stderr) {
+static void restore_redirections(Redirection *red, int saved_stdout, int saved_stderr) {
     if (red->out_fd != -1) {
         dup2(saved_stdout, STDOUT_FILENO);
         close(red->out_fd);
@@ -354,7 +430,7 @@ void restore_redirections(struct Redirection *red, int saved_stdout, int saved_s
     }
 }
 
-char **handle_redirection(char **args, struct Redirection *red) {
+static char **handle_redirection(char **args, Redirection *red) {
     char **new_args = malloc(sizeof(char *) * BUFSIZ);
     if (args[0] == NULL) {
         return NULL;
@@ -402,9 +478,9 @@ char **handle_redirection(char **args, struct Redirection *red) {
     return new_args;
 }
 
-struct Command *split_commands(char **args, int *cmd_count) {
+static Command *split_commands(char **args, int *cmd_count) {
     int capacity = 10;
-    struct Command *commands = malloc(sizeof(struct Command) * capacity);
+    Command *commands = malloc(sizeof(Command) * capacity);
     int current_cmd = 0;
     int arg_pos = 0;
     char **current_args = malloc(sizeof(char *) * BUFSIZ);
@@ -413,12 +489,12 @@ struct Command *split_commands(char **args, int *cmd_count) {
         if (strcmp(args[i], "|") == 0) {
             current_args[arg_pos] = NULL;
             commands[current_cmd].args = current_args;
-            commands[current_cmd].red = (struct Redirection){-1, -1};
+            commands[current_cmd].red = (Redirection){-1, -1};
             current_cmd++;
 
             if (current_cmd >= capacity){
                 capacity *= 2;
-                commands = realloc(commands, sizeof(struct Command) * capacity);
+                commands = realloc(commands, sizeof(Command) * capacity);
             }
 
             arg_pos = 0;
@@ -430,14 +506,14 @@ struct Command *split_commands(char **args, int *cmd_count) {
     // Handle last command
     current_args[arg_pos] = NULL;
     commands[current_cmd].args = current_args;
-    commands[current_cmd].red = (struct Redirection){-1, -1};
+    commands[current_cmd].red = (Redirection){-1, -1};
     current_cmd++;
 
     *cmd_count = current_cmd;
     return commands;
 }
 
-int execute_pipeline(struct Command *commands, int cmd_count) {
+static int execute_pipeline(Command *commands, int cmd_count) {
     int status = 1;
     int pipes[cmd_count - 1][2];
 
@@ -479,19 +555,18 @@ int execute_pipeline(struct Command *commands, int cmd_count) {
                     dup2(commands[i].red.err_fd, STDERR_FILENO);
                 }
 
-                argv = new_args;
+                g_argv = new_args;
             } else {
-                argv = commands[i].args;
+                g_argv = commands[i].args;
             }
-
-            for (int j = 0; j < num_builtins(); j++) {
-                if (strcmp(argv[0], builtins[j]) == 0) {
-                    exit((*builtin_func[j])());
+            for (int j = 0; j < NUM_BUILTINS; j++) {
+                if (strcmp(g_argv[0], BUILTINS[j].name) == 0) {
+                    exit(BUILTINS[j].func());
                 }
             }
 
             // Execute external command
-            execvp(argv[0], argv);
+            execvp(g_argv[0], g_argv);
             perror("execvp");
             exit(EXIT_FAILURE);
         } else if (pid < 0) {
@@ -513,11 +588,12 @@ int execute_pipeline(struct Command *commands, int cmd_count) {
     return status;
 }
 
-int repl() {
-    printf("$ ");
+static int repl() {
+    printf(PS);
     fflush(stdout);
     // Wait for user input
     char input[BUFSIZ];
+    int status = 1;
 
     if (!fgets(input, BUFSIZ, stdin)) {
         printf("exit\n");
@@ -526,13 +602,13 @@ int repl() {
     // Remove newline from input
     int len = strlen(input);
     input[len - 1] = '\0';
-    argv = parse_argv(input);
-    if (argv[0] == NULL) return 1;
+    g_argv = parse_argv(input);
+    if (g_argv[0] == NULL) return 1;
 
-    if (has_pipe(argv)) {
+    if (has_pipe(g_argv)) {
         int cmd_count = 0;
-        struct Command *commands = split_commands(argv, &cmd_count);
-        int status = execute_pipeline(commands, cmd_count);
+        Command *commands = split_commands(g_argv, &cmd_count);
+        status = execute_pipeline(commands, cmd_count);
 
         // Cleanup
         for (int i = 0; i < cmd_count; i++) {
@@ -545,56 +621,63 @@ int repl() {
         return status;
     }
 
-    struct Redirection red = {-1, -1};
-    char **cmd_args = argv;
+    Redirection redirections = {-1, -1};
+    char **cmd_args = g_argv;
 
     // Save file descriptors
     int saved_stdout = -1;
     int saved_stderr = -1;
-    if (has_redirection(argv)) {
-        cmd_args = handle_redirection(argv, &red);
+    if (has_redirection(g_argv)) {
+        cmd_args = handle_redirection(g_argv, &redirections);
         if (cmd_args == NULL) return 1;
 
-        if (red.out_fd != -1) {
+        if (redirections.out_fd != -1) {
             saved_stdout = dup(STDOUT_FILENO);
-            dup2(red.out_fd, STDOUT_FILENO);
+            dup2(redirections.out_fd, STDOUT_FILENO);
         }
-        if (red.err_fd != -1) {
+        if (redirections.err_fd != -1) {
             saved_stderr = dup(STDERR_FILENO);
-            dup2(red.err_fd, STDERR_FILENO);
+            dup2(redirections.err_fd, STDERR_FILENO);
         }
     }
-    int status = 1;
 
     // Check for builtins
-    for (int i = 0, n = num_builtins(); i < n; i++) {
-        if (strcmp(cmd_args[0], builtins[i]) == 0) {
-            argv = cmd_args;
-            status = (*builtin_func[i])();
-            restore_redirections(&red, saved_stdout, saved_stderr);
+    for (int i = 0; i < NUM_BUILTINS; i++) {
+        if (strcmp(cmd_args[0], BUILTINS[i].name) == 0) {
+            g_argv = cmd_args;
+            status = BUILTINS[i].func();
+            restore_redirections(&redirections, saved_stdout, saved_stderr);
             return status;
         }
     }
 
-    // If not builtin, must be external program
-    argv = cmd_args;
-    status = launch();
-    restore_redirections(&red, saved_stdout, saved_stderr);
+    // If not builtin, execute external program
+    g_argv = cmd_args;
+    status = execute_external();
+    restore_redirections(&redirections, saved_stdout, saved_stderr);
 
     // Cleanup
-    if (cmd_args != argv) {
+    if (cmd_args != g_argv) {
         for (int i = 0; cmd_args[i] != NULL; i++) {
             free(cmd_args[i]);
         }
         free(cmd_args);
     }
+
+    if (g_argv == NULL) return status;
+    for (int i = 0; g_argv[i] != NULL; i++) {
+        free(g_argv[i]);
+    }
+    free(g_argv);
+
     return status;
 }
 
 int main() {
-    while(repl()) {
-        free_tokens();
-    };
+    init_path_cache();
+    while(repl())
+        ;
 
+    free_path_cache();
     return 0;
 }
