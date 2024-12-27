@@ -66,25 +66,6 @@ static const struct {
 };
 #define NUM_BUILTINS (sizeof(BUILTINS) / sizeof(BUILTINS[0]))
 
-#if 0
-char *builtins[] = {
-    "echo", "exit", "type", "pwd", "cd",
-};
-
-// NOTE: Must be in same order as builtins[]
-int (*builtin_func[]) () = {
-    &builtin_echo,
-    &builtin_exit,
-    &builtin_type,
-    &builtin_pwd,
-    &builtin_cd,
-};
-
-int num_builtins() {
-    return sizeof(builtins) / sizeof(char *);
-}
-#endif
-
 static void init_path_cache(void) {
     char *path_env = getenv("PATH");
     if (!path_env) return;
