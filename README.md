@@ -11,24 +11,72 @@ REPLs, builtin commands, and more.
 **Note**: If you're viewing this repo on GitHub, head over to
 [codecrafters.io](https://codecrafters.io) to try the challenge.
 
-# Passing the first stage
+1. ensure you have `c` installed locally
+2. run `./your_program.sh` to run your program, which is implemented in
+   `app/main.c`.
 
-The entry point for your `shell` implementation is in `app/main.c`. Study and
-uncomment the relevant code, and push your changes to pass the first stage:
 
-```sh
-git commit -am "pass 1st stage" # any msg
-git push origin master
+```mermaid
+graph TB
+    subgraph "User Interface Layer"
+        UI[User Input]
+        REPL[REPL/Input Handler]:::core
+    end
+
+    subgraph "Command Processing Layer"
+        Parser[Command Parser/Lexer]:::core
+        Validator[Syntax Validator]:::core
+    end
+
+    subgraph "Command Execution Layer"
+        CmdExec[Command Executor]:::core
+        decision{Built-in?}
+        BuiltIn[Built-in Commands Handler]:::core
+        ExtExec[External Program Executor]:::core
+    end
+
+    subgraph "System Interface Layer"
+        ProcMgmt[Process Management]:::system
+        FileSystem[File System Interface]:::system
+        EnvVars[Environment Variables]:::system
+    end
+
+    %% Relationships
+    UI --> REPL
+    REPL --> Parser
+    Parser --> Validator
+    Validator --> CmdExec
+    CmdExec --> decision
+    decision -->|Yes| BuiltIn
+    decision -->|No| ExtExec
+    
+    BuiltIn -.->|Interacts| FileSystem
+    BuiltIn -.->|Manages| EnvVars
+    ExtExec -->|Uses| ProcMgmt
+    ProcMgmt -.->|fork/exec| SystemCalls[System Calls]:::system
+    
+    %% System Call Connections
+    ExtExec -.->|execve| SystemCalls
+    ProcMgmt -.->|wait| SystemCalls
+    FileSystem -.->|chdir/getcwd| SystemCalls
+
+    %% Click Events
+    click REPL "https://github.com/jkylander/codecrafters-shell-c/blob/master/app/main.c"
+    click Parser "https://github.com/jkylander/codecrafters-shell-c/blob/master/app/main.c"
+    click CmdExec "https://github.com/jkylander/codecrafters-shell-c/blob/master/app/main.c"
+    click ExtExec "https://github.com/jkylander/codecrafters-shell-c/blob/master/.codecrafters/run.sh"
+    click BuiltIn "https://github.com/jkylander/codecrafters-shell-c/blob/master/app/main.c"
+
+    %% Styles
+    classDef core fill:#2374ab,stroke:#2374ab,color:white
+    classDef system fill:#57a773,stroke:#57a773,color:white
+    classDef external fill:#ffc857,stroke:#ffc857,color:black
+
+    %% Legend
+    subgraph Legend
+        L1[Core Components]:::core
+        L2[System Components]:::system
+        L3[External Components]:::external
+    end
 ```
 
-Time to move on to the next stage!
-
-# Stage 2 & beyond
-
-Note: This section is for stages 2 and beyond.
-
-1. Ensure you have `c (9.2)` installed locally
-1. Run `./your_program.sh` to run your program, which is implemented in
-   `app/main.c`.
-1. Commit your changes and run `git push origin master` to submit your solution
-   to CodeCrafters. Test output will be streamed to your terminal.
